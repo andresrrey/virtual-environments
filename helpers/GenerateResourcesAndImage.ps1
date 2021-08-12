@@ -80,11 +80,11 @@ Function GenerateResourcesAndImage {
         .PARAMETER Force
             Delete the resource group if it exists without user confirmation.
 
-        .PARAMETER AzureClientId
-            Client id needs to be provided for optional authentication via service principal. Example: "11111111-1111-1111-1111-111111111111"
+        .PARAMETER AzureAppId
+            App id needs to be provided for optional authentication via service principal. Example: "11111111-1111-1111-1111-111111111111"
 
-        .PARAMETER AzureClientSecret
-            Client secret needs to be provided for optional authentication via service principal. Example: "11111111-1111-1111-1111-111111111111"
+        .PARAMETER AzureCertPath
+            Certificate path needs to be provided for optional authentication via service principal.
 
         .PARAMETER AzureTenantId
             Tenant needs to be provided for optional authentication via service principal. Example: "11111111-1111-1111-1111-111111111111"
@@ -110,9 +110,9 @@ Function GenerateResourcesAndImage {
         [Parameter(Mandatory = $False)]
         [int] $SecondsToWaitForServicePrincipalSetup = 30,
         [Parameter(Mandatory = $False)]
-        [string] $AzureClientId,
+        [string] $AzureAppId,
         [Parameter(Mandatory = $False)]
-        [string] $AzureClientSecret,
+        [string] $AzureCertPath,
         [Parameter(Mandatory = $False)]
         [string] $AzureTenantId,
         [Parameter(Mandatory = $False)]
@@ -122,16 +122,16 @@ Function GenerateResourcesAndImage {
     )
 
     $builderScriptPath = Get-PackerTemplatePath -RepositoryRoot $ImageGenerationRepositoryRoot -ImageType $ImageType
-    $ServicePrincipalClientSecret = $env:UserName + [System.GUID]::NewGuid().ToString().ToUpper();
+    #$ServicePrincipalClientSecret = $env:UserName + [System.GUID]::NewGuid().ToString().ToUpper();
     $InstallPassword = $env:UserName + [System.GUID]::NewGuid().ToString().ToUpper();
 
-    if ([string]::IsNullOrEmpty($AzureClientId))
+    if ([string]::IsNullOrEmpty($AzureAppId))
     {
         Connect-AzAccount
     } else {
-        $AzSecureSecret = ConvertTo-SecureString $AzureClientSecret -AsPlainText -Force
-        $AzureAppCred = New-Object System.Management.Automation.PSCredential($AzureClientId, $AzSecureSecret)
-        Connect-AzAccount -ServicePrincipal -Credential $AzureAppCred -Tenant $AzureTenantId
+        #$AzSecureSecret = ConvertTo-SecureString $AzureClientSecret -AsPlainText -Force
+        #$AzureAppCred = New-Object System.Management.Automation.PSCredential($AzureClientId, $AzSecureSecret)
+        Connect-AzAccount -ServicePrincipal -CertificatePath $AzureCertPath -Tenant $AzureTenantId -ApplicationId $AzureAppId
     }
     Set-AzContext -SubscriptionId $SubscriptionId
 
@@ -186,9 +186,9 @@ Function GenerateResourcesAndImage {
     $storageAccountName = $storageAccountName.Replace("-", "").Replace("_", "").Replace("(", "").Replace(")", "").ToLower()
     $storageAccountName += "001"
 
-    New-AzStorageAccount -ResourceGroupName $ResourceGroupName -AccountName $storageAccountName -Location $AzureLocation -SkuName "Standard_LRS"
+    #New-AzStorageAccount -ResourceGroupName $ResourceGroupName -AccountName $storageAccountName -Location $AzureLocation -SkuName "Standard_LRS"
 
-    if ([string]::IsNullOrEmpty($AzureClientId)) {
+    if ([string]::IsNullOrEmpty($AzureAppId)) {
         # Interactive authentication: A service principal is created during runtime.
         $spDisplayName = [System.GUID]::NewGuid().ToString().ToUpper()
         $credentialProperties = @{ StartDate=Get-Date; EndDate=Get-Date -Year 2024; Password=$ServicePrincipalClientSecret }
@@ -196,7 +196,6 @@ Function GenerateResourcesAndImage {
         $sp = New-AzADServicePrincipal -DisplayName $spDisplayName -PasswordCredential $credentials
 
         $spAppId = $sp.ApplicationId
-        $spClientId = $sp.ApplicationId
         Start-Sleep -Seconds $SecondsToWaitForServicePrincipalSetup
 
         New-AzRoleAssignment -RoleDefinitionName Contributor -ServicePrincipalName $spAppId
@@ -207,10 +206,9 @@ Function GenerateResourcesAndImage {
     } else {
         # Parametrized Authentication via given service principal: The service principal with the data provided via the command line
         # is used for all authentication purposes.
-        $spAppId = $AzureClientId
-        $spClientId = $AzureClientId
+        $spAppId = $AzureAppId
         $credentials = $AzureAppCred
-        $ServicePrincipalClientSecret = $AzureClientSecret
+        $ServicePrincipalCertPath = $AzureCertPath
         $tenantId = $AzureTenantId
     }
 
@@ -225,16 +223,17 @@ Function GenerateResourcesAndImage {
         $AgentIp = (Invoke-RestMethod http://ipinfo.io/json).ip
         echo "Restricting access to packer generated VM to agent IP Address: $AgentIp"
     }
-
+    
     & $packerBinary build -on-error=ask `
-        -var "client_id=$($spClientId)" `
-        -var "client_secret=$($ServicePrincipalClientSecret)" `
-        -var "subscription_id=$($SubscriptionId)" `
-        -var "tenant_id=$($tenantId)" `
-        -var "location=$($AzureLocation)" `
-        -var "resource_group=$($ResourceGroupName)" `
-        -var "storage_account=$($storageAccountName)" `
-        -var "install_password=$($InstallPassword)" `
-        -var "allowed_inbound_ip_addresses=$($AgentIp)" `
+    -var "client_id=$($spAppId)" `
+    -var "client_cert_path=$($ServicePrincipalCertPath)" `
+    -var "subscription_id=$($SubscriptionId)" `
+    -var "tenant_id=$($tenantId)" `
+    -var "resource_group=$($ResourceGroupName)" `
+    -var "build_resource_group_name=$($ResourceGroupName)" `
+    -var "storage_account=$($storageAccountName)" `
+    -var "install_password=$($InstallPassword)" `
+    -var "allowed_inbound_ip_addresses=$($AgentIp)" `
         $builderScriptPath
+
 }
